@@ -1,10 +1,6 @@
 package com.sweatlock.ui.workout
 
 import android.Manifest
-import android.content.Intent
-import android.content.pm.PackageManager
-import android.net.Uri
-import android.provider.Settings
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.camera.core.CameraSelector
@@ -13,10 +9,13 @@ import androidx.camera.core.Preview
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
 import androidx.compose.foundation.Canvas
-import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.*
+import androidx.compose.foundation.background
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.Text
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -26,6 +25,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -33,80 +33,115 @@ import androidx.core.content.ContextCompat
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.sweatlock.blocking.Perms
 import com.sweatlock.ui.theme.*
 import com.sweatlock.workout.*
+import kotlinx.coroutines.delay
 import java.util.concurrent.Executors
 
+/**
+ * Used in two modes:
+ *  - practice (lockedPackage == null): exercise toggle visible, nothing gets unlocked
+ *  - locked (from LockActivity): exercise/reps come from Settings; finishing unlocks [lockedPackage]
+ */
 @Composable
-fun WorkoutScreen(vm: WorkoutViewModel = hiltViewModel()) {
+fun WorkoutScreen(
+    lockedPackage: String? = null,
+    lockedLabel: String? = null,
+    onUnlocked: () -> Unit = {},
+    onClose: (() -> Unit)? = null,
+    vm: WorkoutViewModel = hiltViewModel()
+) {
     val ui by vm.ui.collectAsStateWithLifecycle()
     val ctx = LocalContext.current
-    var hasCamera by remember {
-        mutableStateOf(ContextCompat.checkSelfPermission(ctx, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED)
-    }
+    var hasCamera by remember { mutableStateOf(Perms.camera(ctx)) }
     val launcher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { hasCamera = it }
+
     LaunchedEffect(Unit) { if (!hasCamera) launcher.launch(Manifest.permission.CAMERA) }
+    LaunchedEffect(lockedPackage) { vm.setLockedPackage(lockedPackage) }
+    LaunchedEffect(ui.completed) {
+        if (ui.completed && lockedPackage != null) { delay(1200); onUnlocked() }
+    }
 
-    Column(
-        Modifier.fillMaxSize().background(Bg).statusBarsPadding().navigationBarsPadding().padding(20.dp),
-        horizontalAlignment = Alignment.CenterHorizontally
-    ) {
-        Text("Do ${ui.goal} ${if (ui.exercise == Exercise.PUSHUP) "pushups" else "squats"}",
-            fontSize = 28.sp, fontWeight = FontWeight.Bold)
-        Text("to unlock your apps", color = Color.Gray)
-        Spacer(Modifier.height(14.dp))
+    val name = if (ui.exercise == Exercise.PUSHUP) "pushups" else "squats"
 
-        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            Exercise.values().forEach { e ->
-                val sel = e == ui.exercise
-                Button(
-                    onClick = { vm.setExercise(e) },
-                    shape = RoundedCornerShape(50),
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = if (sel) Accent else Card,
-                        contentColor = if (sel) Color.White else Color.Black)
-                ) { Text(if (e == Exercise.PUSHUP) "Pushups" else "Squats") }
+    GlassBackground {
+        Column(
+            Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding()
+                .verticalScroll(rememberScrollState()).padding(20.dp),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Text("Do ${ui.goal} $name", fontSize = 30.sp, fontWeight = FontWeight.Bold, color = Ink)
+            Text(
+                if (lockedLabel != null) "to unlock $lockedLabel" else "practice mode",
+                color = Muted, fontSize = 16.sp
+            )
+            Spacer(Modifier.height(14.dp))
+
+            if (lockedPackage == null) {
+                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    GlassButton("Pushups", { vm.setExercise(Exercise.PUSHUP) }, primary = ui.exercise == Exercise.PUSHUP)
+                    GlassButton("Squats", { vm.setExercise(Exercise.SQUAT) }, primary = ui.exercise == Exercise.SQUAT)
+                }
+                Spacer(Modifier.height(14.dp))
             }
-        }
-        Spacer(Modifier.height(14.dp))
 
-        Box(Modifier.fillMaxWidth().aspectRatio(3f / 4f).clip(RoundedCornerShape(28.dp)).background(Color.Black)) {
-            if (hasCamera) {
-                CameraPreview(vm::onLandmarks, Modifier.fillMaxSize())
-                SkeletonOverlay(ui.landmarks, ui.state.fullBodyVisible, Modifier.fillMaxSize())
-            } else {
-                // Edge case: permission denied -> explain + deep-link to app settings
-                Column(Modifier.align(Alignment.Center).padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                    Text("Camera access is needed to count your reps.", color = Color.White)
-                    Spacer(Modifier.height(12.dp))
-                    Button(onClick = {
-                        ctx.startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
-                            Uri.fromParts("package", ctx.packageName, null)))
-                    }, shape = RoundedCornerShape(50)) { Text("Open settings") }
+            GlassCard(Modifier.fillMaxWidth()) {
+                Box(
+                    Modifier.padding(6.dp).fillMaxWidth().aspectRatio(3f / 4f)
+                        .clip(RoundedCornerShape(22.dp)).background(Color.Black)
+                ) {
+                    if (hasCamera) {
+                        CameraPreview(vm::onLandmarks, Modifier.fillMaxSize())
+                        SkeletonOverlay(ui.landmarks, ui.state.fullBodyVisible, Modifier.fillMaxSize())
+                    } else {
+                        // Edge case: permission denied -> explain + deep-link to app settings
+                        Column(
+                            Modifier.align(Alignment.Center).padding(24.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally
+                        ) {
+                            Text("Camera access is needed to count your reps.", color = Color.White, textAlign = TextAlign.Center)
+                            Spacer(Modifier.height(12.dp))
+                            GlassButton("Open settings", { ctx.startActivity(Perms.appDetailsIntent(ctx)) }, primary = true)
+                        }
+                    }
                 }
             }
-        }
-        Spacer(Modifier.height(16.dp))
+            Spacer(Modifier.height(16.dp))
 
-        Card(shape = RoundedCornerShape(28.dp), colors = CardDefaults.cardColors(containerColor = Card),
-            modifier = Modifier.fillMaxWidth()) {
-            Column(Modifier.fillMaxWidth().padding(20.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                Text("${ui.state.reps} / ${ui.goal}", fontSize = 48.sp, fontWeight = FontWeight.Bold)
-                val msg = when {
-                    ui.completed -> "Unlocked! \uD83C\uDF89"
-                    !ui.state.fullBodyVisible -> "Step back: show your full body"
-                    ui.state.lastRepRejected -> "Too fast, slow down"
-                    else -> "Phase: ${ui.state.phase.name} - angle ${ui.state.angle.toInt()}\u00B0"
-                }
-                Text(msg, color = when {
-                    ui.completed -> Good
-                    !ui.state.fullBodyVisible || ui.state.lastRepRejected -> Warn
-                    else -> Color.Gray
-                })
-                if (ui.completed) {
+            GlassCard(Modifier.fillMaxWidth()) {
+                Column(Modifier.fillMaxWidth().padding(20.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                    Text("${ui.state.reps} / ${ui.goal}", fontSize = 48.sp, fontWeight = FontWeight.Bold, color = Ink)
+                    Spacer(Modifier.height(8.dp))
+                    LinearProgressIndicator(
+                        progress = { (ui.state.reps.toFloat() / ui.goal).coerceIn(0f, 1f) },
+                        modifier = Modifier.fillMaxWidth().height(8.dp).clip(RoundedCornerShape(50)),
+                        color = if (ui.completed) Good else Accent,
+                        trackColor = Color.White.copy(alpha = 0.6f)
+                    )
                     Spacer(Modifier.height(10.dp))
-                    Button(onClick = vm::restart, shape = RoundedCornerShape(50)) { Text("Go again") }
+                    val msg = when {
+                        ui.completed && lockedPackage != null -> "Unlocked for ${ui.durationMin} min \uD83C\uDF89"
+                        ui.completed -> "Nice work! \uD83C\uDF89"
+                        !ui.state.fullBodyVisible -> "Step back: show your full body"
+                        ui.state.lastRepRejected -> "Too fast, slow down"
+                        else -> "${ui.state.phase.name} \u00B7 angle ${ui.state.angle.toInt()}\u00B0"
+                    }
+                    Text(
+                        msg, textAlign = TextAlign.Center,
+                        color = when {
+                            ui.completed -> Good
+                            !ui.state.fullBodyVisible || ui.state.lastRepRejected -> Warn
+                            else -> Muted
+                        }
+                    )
                 }
+            }
+
+            Spacer(Modifier.height(14.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                if (lockedPackage == null && ui.completed) GlassButton("Go again", vm::restart, primary = true)
+                onClose?.let { GlassButton(if (lockedPackage != null) "Not now" else "Close", it) }
             }
         }
     }

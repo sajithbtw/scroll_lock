@@ -35,15 +35,14 @@ class RepCounter(
     private var lastAngle = 180f
 
     private companion object {
-        // ML Kit PoseLandmark indices: shoulder/elbow/wrist and hip/knee/ankle
         val ARM_L = Triple(11, 13, 15); val ARM_R = Triple(12, 14, 16)
         val LEG_L = Triple(23, 25, 27); val LEG_R = Triple(24, 26, 28)
         val REQUIRED = (11..16) + (23..28)
-        const val MIN_VISIBILITY = 0.5f
+        const val MIN_VISIBILITY = 0.6f
+        const val MIN_BODY_SPAN = 0.4f // body must cover >= 40% of the frame (width or height)
     }
 
     fun update(lm: Map<Int, Landmark>, timestampMs: Long): RepState {
-        // Anti-cheat: full body must be in frame, otherwise nothing counts.
         if (!fullBodyInFrame(lm)) return RepState(reps, phase, lastAngle, false)
 
         val angle = jointAngle(lm)
@@ -63,11 +62,15 @@ class RepCounter(
         return RepState(reps, phase, angle, true, rejected)
     }
 
-    private fun fullBodyInFrame(lm: Map<Int, Landmark>) = REQUIRED.all { i ->
-        lm[i]?.let { it.visibility >= MIN_VISIBILITY && it.x in 0f..1f && it.y in 0f..1f } == true
+    /** All key joints visible + inside the frame + body big enough (stops "phone in face" cheating). */
+    private fun fullBodyInFrame(lm: Map<Int, Landmark>): Boolean {
+        val pts = REQUIRED.map { lm[it] ?: return false }
+        if (pts.any { it.visibility < MIN_VISIBILITY || it.x !in 0f..1f || it.y !in 0f..1f }) return false
+        val w = pts.maxOf { it.x } - pts.minOf { it.x }
+        val h = pts.maxOf { it.y } - pts.minOf { it.y }
+        return maxOf(w, h) >= MIN_BODY_SPAN
     }
 
-    /** Uses the more visible side (pushups are usually filmed side-on). */
     private fun jointAngle(lm: Map<Int, Landmark>): Float {
         val (l, r) = if (isPushup) ARM_L to ARM_R else LEG_L to LEG_R
         fun vis(t: Triple<Int, Int, Int>) =
